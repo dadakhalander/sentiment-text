@@ -1,16 +1,15 @@
 import streamlit as st
-import pandas as pd
 import re
 from datetime import datetime
 import io
-from collections import Counter
+from collections import defaultdict
 
-# Import with error handling
+# Import with fallbacks
 try:
-    import emoji
-    EMOJI_AVAILABLE = True
+    import altair as alt
+    ALTAIR_AVAILABLE = True
 except ImportError:
-    EMOJI_AVAILABLE = False
+    ALTAIR_AVAILABLE = False
 
 try:
     from nltk.sentiment import SentimentIntensityAnalyzer
@@ -19,126 +18,94 @@ try:
 except ImportError:
     NLTK_AVAILABLE = False
 
-# Download NLTK data if available
+# Download NLTK data
 if NLTK_AVAILABLE:
     try:
-        nltk.data.find('sentiment/vader_lexicon.zip')
-    except LookupError:
-        try:
-            nltk.download('vader_lexicon', quiet=True)
-        except:
-            NLTK_AVAILABLE = False
-
-def parse_whatsapp_chat(file_content):
-    """Simple WhatsApp chat parser"""
-    try:
-        lines = file_content.decode('utf-8').split('\n')
+        nltk.download('vader_lexicon', quiet=True)
     except:
-        lines = file_content.split('\n')
-    
-    messages = []
-    current_message = None
-    
-    # Common date patterns
-    patterns = [
-        r'^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2})\s*-\s*(.+?):\s*(.*)$',
-        r'^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2}\s*[AP]M)\s*-\s*(.+?):\s*(.*)$',
-    ]
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        matched = False
-        for pattern in patterns:
-            match = re.match(pattern, line)
-            if match:
-                date_str, time_str, author, message = match.groups()
-                
-                try:
-                    # Try different date formats
-                    for dayfirst in [True, False]:
-                        try:
-                            if 'M' in time_str.upper():
-                                dt_str = f"{date_str} {time_str}"
-                                dt_format = "%d/%m/%Y %I:%M %p" if dayfirst else "%m/%d/%Y %I:%M %p"
-                            else:
-                                dt_str = f"{date_str} {time_str}"
-                                dt_format = "%d/%m/%Y %H:%M" if dayfirst else "%m/%d/%Y %H:%M"
-                            
-                            dt = datetime.strptime(dt_str, dt_format)
-                            break
-                        except ValueError:
-                            continue
-                    else:
-                        continue  # Skip if no format worked
-                    
-                    if current_message:
-                        messages.append(current_message)
-                    
-                    current_message = {
-                        'datetime': dt,
-                        'author': author.strip(),
-                        'message': message.strip(),
-                    }
-                    matched = True
-                    break
-                    
-                except ValueError:
-                    continue
+        NLTK_AVAILABLE = False
+
+class ChatAnalyzer:
+    def __init__(self):
+        self.messages = []
         
-        if not matched and current_message:
-            # Continuation line
-            current_message['message'] += ' ' + line
+    def parse_whatsapp_chat(self, file_content):
+        """Parse WhatsApp chat without pandas"""
+        try:
+            lines = file_content.decode('utf-8').split('\n')
+        except:
+            lines = file_content.split('\n')
+        
+        current_message = None
+        patterns = [
+            r'^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2})\s*-\s*(.+?):\s*(.*)$',
+            r'^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}:\d{2}\s*[AP]M)\s*-\s*(.+?):\s*(.*)$',
+        ]
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            matched = False
+            for pattern in patterns:
+                match = re.match(pattern, line)
+                if match:
+                    date_str, time_str, author, message = match.groups()
+                    
+                    try:
+                        for dayfirst in [True, False]:
+                            try:
+                                if 'M' in time_str.upper():
+                                    dt_format = "%d/%m/%Y %I:%M %p" if dayfirst else "%m/%d/%Y %I:%M %p"
+                                else:
+                                    dt_format = "%d/%m/%Y %H:%M" if dayfirst else "%m/%d/%Y %H:%M"
+                                
+                                dt_str = f"{date_str} {time_str}"
+                                dt = datetime.strptime(dt_str, dt_format)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            continue
+                        
+                        if current_message:
+                            self.messages.append(current_message)
+                        
+                        current_message = {
+                            'datetime': dt,
+                            'author': author.strip(),
+                            'message': message.strip(),
+                            'clean_message': self.clean_message(message.strip())
+                        }
+                        matched = True
+                        break
+                        
+                    except ValueError:
+                        continue
+            
+            if not matched and current_message:
+                current_message['message'] += ' ' + line
+                current_message['clean_message'] = self.clean_message(current_message['message'])
+        
+        if current_message:
+            self.messages.append(current_message)
+        
+        return self.messages
     
-    if current_message:
-        messages.append(current_message)
+    def clean_message(self, text):
+        """Clean message text"""
+        if not text:
+            return ""
+        text = re.sub(r'<.*?>', '', text)
+        text = re.sub(r'http\S+', '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
     
-    return pd.DataFrame(messages)
-
-def clean_message(text):
-    """Basic text cleaning"""
-    if pd.isna(text):
-        return ""
-    text = str(text)
-    # Remove common WhatsApp artifacts
-    text = re.sub(r'<.*?>', '', text)  # Media markers
-    text = re.sub(r'http\S+', '', text)  # URLs
-    text = re.sub(r'\s+', ' ', text).strip()  # Extra spaces
-    return text
-
-def simple_sentiment(text):
-    """Rule-based sentiment as fallback"""
-    text_lower = text.lower()
-    
-    positive_words = {'good', 'great', 'excellent', 'amazing', 'happy', 'love', 'like', 
-                     'nice', 'awesome', 'fantastic', 'wonderful', 'perfect', 'best', 
-                     'beautiful', 'yes', 'yeah', 'yay', 'woohoo', 'thanks', 'thank you'}
-    
-    negative_words = {'bad', 'terrible', 'awful', 'hate', 'angry', 'sad', 'upset', 
-                     'disappointed', 'worst', 'horrible', 'no', 'not', "don't", 
-                     "can't", 'worse', 'sorry', 'apologize'}
-    
-    pos_count = sum(1 for word in positive_words if word in text_lower)
-    neg_count = sum(1 for word in negative_words if word in text_lower)
-    
-    if pos_count > neg_count:
-        return 'positive', 0.5
-    elif neg_count > pos_count:
-        return 'negative', -0.5
-    else:
-        return 'neutral', 0.0
-
-def analyze_chat(df):
-    """Main analysis function"""
-    df['clean_message'] = df['message'].apply(clean_message)
-    df['word_count'] = df['clean_message'].str.split().str.len().fillna(0)
-    
-    # Sentiment analysis
-    if NLTK_AVAILABLE:
-        sia = SentimentIntensityAnalyzer()
-        def get_sentiment(text):
+    def analyze_sentiment(self, text):
+        """Analyze sentiment with fallback"""
+        if NLTK_AVAILABLE:
+            sia = SentimentIntensityAnalyzer()
             scores = sia.polarity_scores(str(text))
             compound = scores['compound']
             if compound >= 0.05:
@@ -147,126 +114,180 @@ def analyze_chat(df):
                 return 'negative', compound
             else:
                 return 'neutral', compound
-    else:
-        get_sentiment = simple_sentiment
+        else:
+            # Simple rule-based
+            text_lower = text.lower()
+            pos_words = ['good', 'great', 'excellent', 'happy', 'love', 'like', 'nice', 'thanks']
+            neg_words = ['bad', 'terrible', 'hate', 'angry', 'sad', 'sorry', 'no', 'not']
+            
+            pos_count = sum(1 for word in pos_words if word in text_lower)
+            neg_count = sum(1 for word in neg_words if word in text_lower)
+            
+            if pos_count > neg_count:
+                return 'positive', 0.5
+            elif neg_count > pos_count:
+                return 'negative', -0.5
+            else:
+                return 'neutral', 0.0
     
-    sentiment_results = df['clean_message'].apply(get_sentiment)
-    df[['sentiment', 'sentiment_score']] = pd.DataFrame(sentiment_results.tolist(), index=df.index)
-    
-    return df
+    def get_stats(self):
+        """Calculate statistics"""
+        if not self.messages:
+            return {}
+        
+        stats = {
+            'total_messages': len(self.messages),
+            'authors': set(),
+            'sentiments': defaultdict(int),
+            'author_stats': defaultdict(lambda: {'count': 0, 'sentiment_sum': 0}),
+            'word_counts': []
+        }
+        
+        for msg in self.messages:
+            # Author stats
+            stats['authors'].add(msg['author'])
+            stats['author_stats'][msg['author']]['count'] += 1
+            
+            # Sentiment analysis
+            sentiment, score = self.analyze_sentiment(msg['clean_message'])
+            stats['sentiments'][sentiment] += 1
+            stats['author_stats'][msg['author']]['sentiment_sum'] += score
+            
+            # Word count
+            word_count = len(msg['clean_message'].split())
+            stats['word_counts'].append(word_count)
+        
+        stats['unique_authors'] = len(stats['authors'])
+        stats['avg_words'] = sum(stats['word_counts']) / len(stats['word_counts']) if stats['word_counts'] else 0
+        stats['positive_count'] = stats['sentiments']['positive']
+        stats['negative_count'] = stats['sentiments']['negative']
+        stats['neutral_count'] = stats['sentiments']['neutral']
+        
+        return stats
 
 def main():
     st.set_page_config(
-        page_title="WhatsApp Analyzer",
+        page_title="WhatsApp Chat Analyzer",
         page_icon="💬",
         layout="wide"
     )
     
     st.title("💬 WhatsApp Chat Analyzer")
-    st.markdown("Upload your WhatsApp chat export to analyze sentiment and statistics")
+    st.markdown("Upload your WhatsApp chat export for sentiment analysis")
     
-    uploaded_file = st.file_uploader("Choose a WhatsApp .txt file", type="txt")
+    uploaded_file = st.file_uploader("Choose a .txt file", type="txt")
     
     if uploaded_file is not None:
         try:
             with st.spinner("Analyzing your chat..."):
-                # Parse chat
-                df = parse_whatsapp_chat(uploaded_file.read())
-                
-                if len(df) == 0:
-                    st.error("Could not parse the chat file. Please check the format.")
-                    return
-                
-                # Analyze
-                df = analyze_chat(df)
-                
-            st.success(f"✅ Successfully analyzed {len(df)} messages!")
+                analyzer = ChatAnalyzer()
+                messages = analyzer.parse_whatsapp_chat(uploaded_file.read())
+                stats = analyzer.get_stats()
             
-            # Overview metrics
+            if not messages:
+                st.error("No messages found in the file. Please check the format.")
+                return
+            
+            st.success(f"✅ Analyzed {stats['total_messages']} messages!")
+            
+            # Display metrics
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Messages", len(df))
+                st.metric("Total Messages", stats['total_messages'])
             with col2:
-                st.metric("Unique Authors", df['author'].nunique())
+                st.metric("Unique Authors", stats['unique_authors'])
             with col3:
-                positive = (df['sentiment'] == 'positive').sum()
-                st.metric("Positive Messages", positive)
+                st.metric("Positive", stats['positive_count'])
             with col4:
-                st.metric("Average Words", f"{df['word_count'].mean():.1f}")
+                st.metric("Average Words", f"{stats['avg_words']:.1f}")
             
-            # Tabs for different views
-            tab1, tab2, tab3 = st.tabs(["📊 Overview", "👥 Authors", "📈 Sentiment"])
+            # Sentiment chart
+            st.subheader("Sentiment Distribution")
+            sentiment_data = {
+                'Sentiment': ['Positive', 'Neutral', 'Negative'],
+                'Count': [stats['positive_count'], stats['neutral_count'], stats['negative_count']]
+            }
             
-            with tab1:
-                st.subheader("Chat Overview")
-                
-                # Sentiment distribution
-                sentiment_counts = df['sentiment'].value_counts()
-                st.bar_chart(sentiment_counts)
-                
-                # Recent messages
-                st.subheader("Recent Messages")
-                display_df = df[['datetime', 'author', 'message', 'sentiment']].copy()
-                display_df['datetime'] = display_df['datetime'].dt.strftime('%Y-%m-%d %H:%M')
-                st.dataframe(display_df.head(20), use_container_width=True)
+            if ALTAIR_AVAILABLE:
+                chart = alt.Chart(alt.Data(values=sentiment_data)).mark_bar().encode(
+                    x='Sentiment:N',
+                    y='Count:Q',
+                    color='Sentiment:N'
+                ).properties(width=600, height=300)
+                st.altair_chart(chart)
+            else:
+                # Simple bar chart using streamlit
+                st.bar_chart({
+                    'Positive': stats['positive_count'],
+                    'Neutral': stats['neutral_count'], 
+                    'Negative': stats['negative_count']
+                })
             
-            with tab2:
-                st.subheader("Author Statistics")
-                
-                author_stats = df.groupby('author').agg({
-                    'message': 'count',
-                    'sentiment_score': 'mean',
-                    'word_count': 'mean'
-                }).round(2)
-                
-                author_stats.columns = ['Message Count', 'Avg Sentiment', 'Avg Words']
-                st.dataframe(author_stats.sort_values('Message Count', ascending=False))
+            # Author statistics
+            st.subheader("Author Statistics")
+            author_data = []
+            for author, author_stats in stats['author_stats'].items():
+                avg_sentiment = author_stats['sentiment_sum'] / author_stats['count'] if author_stats['count'] > 0 else 0
+                author_data.append({
+                    'Author': author,
+                    'Messages': author_stats['count'],
+                    'Avg Sentiment': f"{avg_sentiment:.2f}"
+                })
             
-            with tab3:
-                st.subheader("Sentiment Analysis")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Sentiment by time (if datetime available)
-                    if df['datetime'].notna().any():
-                        df['date'] = pd.to_datetime(df['datetime'].dt.date)
-                        daily_sentiment = df.groupby('date')['sentiment_score'].mean()
-                        st.line_chart(daily_sentiment)
-                
-                with col2:
-                    # Word count by sentiment
-                    sentiment_word_stats = df.groupby('sentiment')['word_count'].mean()
-                    st.bar_chart(sentiment_word_stats)
+            # Display as table
+            author_table = "| Author | Messages | Avg Sentiment |\n|--------|----------|---------------|\n"
+            for data in sorted(author_data, key=lambda x: x['Messages'], reverse=True):
+                author_table += f"| {data['Author']} | {data['Messages']} | {data['Avg Sentiment']} |\n"
             
-            # Download option
+            st.markdown(author_table)
+            
+            # Message preview
+            st.subheader("Message Preview")
+            preview_data = []
+            for i, msg in enumerate(messages[:20]):
+                sentiment, _ = analyzer.analyze_sentiment(msg['clean_message'])
+                preview_data.append({
+                    'Time': msg['datetime'].strftime('%H:%M'),
+                    'Author': msg['author'],
+                    'Message': msg['message'][:100] + '...' if len(msg['message']) > 100 else msg['message'],
+                    'Sentiment': sentiment
+                })
+            
+            preview_table = "| Time | Author | Message | Sentiment |\n|------|--------|---------|-----------|\n"
+            for data in preview_data:
+                preview_table += f"| {data['Time']} | {data['Author']} | {data['Message']} | {data['Sentiment']} |\n"
+            
+            st.markdown(preview_table)
+            
+            # Download results
             st.subheader("Download Results")
-            csv = df.to_csv(index=False)
+            csv_content = "DateTime,Author,Message,CleanMessage\n"
+            for msg in messages:
+                clean_msg = msg['clean_message'].replace('"', '""')
+                original_msg = msg['message'].replace('"', '""')
+                csv_content += f'"{msg["datetime"]}","{msg["author"]}","{original_msg}","{clean_msg}"\n'
+            
             st.download_button(
                 "Download CSV",
-                csv,
+                csv_content,
                 "whatsapp_analysis.csv",
                 "text/csv"
             )
             
         except Exception as e:
-            st.error(f"Error: {str(e)}")
-            st.info("Please ensure you're uploading a valid WhatsApp export file.")
+            st.error(f"Error analyzing chat: {str(e)}")
     
     else:
-        # Instructions
         st.markdown("""
-        ### 📋 How to export your WhatsApp chat:
+        ### 📋 How to use:
+        1. **Export** your WhatsApp chat (.txt format)
+        2. **Upload** the file above
+        3. **View** sentiment analysis and statistics
         
-        1. **Open the chat** in WhatsApp
-        2. **Tap ⋮ (More)** → **Export Chat**
-        3. **Choose "Without Media"**
-        4. **Upload the .txt file** above
-        
-        ### 🔒 Privacy Note:
+        ### 🔒 Privacy:
         - All processing happens in your browser
-        - Your data is never stored on any server
-        - You can download and delete your results
+        - No data is stored on servers
+        - Your chats remain private
         """)
 
 if __name__ == "__main__":

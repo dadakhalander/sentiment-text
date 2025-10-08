@@ -1,4 +1,10 @@
-streamlit==1.28.2
-altair==5.0.1
-nltk==3.8.1
-emoji==2.8.0
+streamlit
+pandas
+numpy
+nltk
+emoji
+matplotlib
+seaborn
+wordcloud
+joblib
+scikit-learn

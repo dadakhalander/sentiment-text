@@ -1,13 +1,4 @@
-streamlit==1.28.0
-pandas==2.0.3
-numpy==1.24.3
-scikit-learn==1.3.0
-joblib==1.3.0
+streamlit==1.28.2
+altair==5.0.1
 nltk==3.8.1
 emoji==2.8.0
-matplotlib==3.7.1
-seaborn==0.12.2
-plotly==5.15.0
-wordcloud==1.9.0
-python-dateutil==2.8.2
-Pillow==10.0.0
